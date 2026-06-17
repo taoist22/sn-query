@@ -52,7 +52,7 @@ Once you have data scattered across your notes, it's time to build a dashboard!
 
 ### The Basic Tab
 The Basic tab allows you to perform simple, quick searches.
-- **Keywords or tags**: Enter words like `#ACC201` or `Assignment`.
+- **Keywords or tags**: Enter words like `#ENG101` or `Assignment`.
 - **Match Mode**: Choose ALL to require every word, or ANY to require at least one.
 - **Filters**: Add specific `key` and `value` pairs (e.g. `status = Open`).
 
@@ -87,7 +87,7 @@ SORT due ASC
 If you build a dashboard you want to check frequently (like "Pending Assignments"), you should save it!
 1. Type your query in the Advanced Tab.
 2. Enter a **Dashboard title** (e.g., "Pending Assignments").
-3. Enter a **Query name** (e.g., "ACC201 Assignments").
+3. Enter a **Query name** (e.g., "ENG101 Assignments").
 4. Tap **Save query**.
 
 ### Exporting Saved Queries
