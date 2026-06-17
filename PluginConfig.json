@@ -1,0 +1,10 @@
+{
+  "name": "SN Query",
+  "desc": "Build Supernote dashboards from native keywords and page properties.",
+  "iconPath": "assets/query.png",
+  "versionName": "0.1.0",
+  "versionCode": "1",
+  "pluginID": "snqueryplugin0001",
+  "pluginKey": "SNQuery",
+  "jsMainPath": "index"
+}
