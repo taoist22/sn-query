@@ -22,7 +22,7 @@ A property block is simply text written inside `[SNQ]` and `[/SNQ]` tags. Every 
 ```text
 [SNQ]
 type: Assignment
-course: ACC201
+course: ENG101
 due: 2026-10-31
 status: Open
 [/SNQ]
