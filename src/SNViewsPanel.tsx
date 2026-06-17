@@ -382,7 +382,7 @@ function defaultDashboardTitle(
       days || FALLBACK_DAYS
     } days`;
   }
-  return `SN Views - last ${days || FALLBACK_DAYS} days`;
+  return `SN Query - last ${days || FALLBACK_DAYS} days`;
 }
 
 function trimLabel(label: string, maxChars: number): string {
@@ -1943,7 +1943,7 @@ export default function SNViewsPanel() {
   const readSelectedQueryText = useCallback(async (): Promise<string> => {
     const selected = await readSelectedTextAny();
     if (!selected.text) {
-      setStatus('No selected text found. Select one query block and open SN Views from the selection toolbar.');
+      setStatus('No selected text found. Select one query block and open SN Query from the selection toolbar.');
       return '';
     }
     const query = extractQueryText(selected.text);
@@ -2159,7 +2159,7 @@ export default function SNViewsPanel() {
     <View style={styles.overlay}>
       <View style={styles.panel}>
         <View style={styles.header}>
-          <Text style={styles.title}>SN Views</Text>
+          <Text style={styles.title}>SN Query</Text>
           <Pressable onPress={close} style={styles.closeBtn}>
             <Text style={styles.closeText}>x</Text>
           </Pressable>
