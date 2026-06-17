@@ -22,3 +22,7 @@ For comprehensive instructions on query syntax, setting up dashboards, and using
 ## Author
 
 Created by [taoist22](https://github.com/taoist22)
+
+## Credits
+
+- <a href="https://www.flaticon.com/free-icons/query" title="query icons">Query icons created by Cap Cool - Flaticon</a>
