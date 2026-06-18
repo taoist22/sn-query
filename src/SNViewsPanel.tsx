@@ -1528,7 +1528,26 @@ export default function SNViewsPanel() {
         pageDiagnostics = propertyResult.pageDiagnostics;
       }
 
+      let itemDate = item.date;
+      if (!itemDate) {
+        const dateKeyword = keywordEntries.map(kw => kw.keyword).find(kw => dateTimeFromValue(kw) != null);
+        if (dateKeyword) {
+           const parsed = dateTimeFromValue(dateKeyword);
+           if (parsed) {
+              itemDate = new Date(parsed);
+           }
+        }
+      }
+      const itemDateLabel = formatDateLabel(itemDate);
+
       for (const properties of items) {
+        if (!properties['date'] && itemDateLabel) {
+           properties['date'] = itemDateLabel;
+        }
+        if (!properties['file']) {
+           properties['file'] = basename(item.path).replace(/\.note$/i, '');
+        }
+
         const allKeywords = uniqueStrings([
           ...keywordEntries.map(kw => kw.keyword),
           ...propertyValuesForKeywords(properties),
