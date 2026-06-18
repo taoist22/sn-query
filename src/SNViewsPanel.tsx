@@ -546,10 +546,7 @@ function extractBlocks(text: string, openTag: string, closeTag: string): string[
 
 function parseProperties(text: string): Record<string, string>[] {
   const blocks = extractBlocks(text, '[SNQ]', '[/SNQ]');
-  if (blocks.length > 0) {
-    return parsePropertyItems(blocks[0], false);
-  }
-  return [];
+  return blocks.flatMap(block => parsePropertyItems(block, false));
 }
 
 function parseLooseProperties(text: string): Record<string, string> {
@@ -1154,8 +1151,13 @@ async function readPropertiesFromNote(
       errors.push(`Properties p.${page}: ${String(e)}`);
     }
   }
+  const noteLevelProps = looseBlocks.length > 0 ? mergeProperties(looseBlocks) : {};
+  const mergedItems = blocks.length > 0
+    ? blocks.map(b => ({ ...noteLevelProps, ...b }))
+    : Object.keys(noteLevelProps).length > 0 ? [noteLevelProps] : [];
+
   return {
-    items: blocks.length > 0 ? blocks : looseBlocks.length > 0 ? [mergeProperties(looseBlocks)] : [],
+    items: mergedItems,
     savedQueries: parsedSavedQueries,
     savedTemplates: parsedSavedTemplates,
     blockCount: snqBlockCount,
@@ -2313,64 +2315,13 @@ export default function SNViewsPanel() {
               </View>
 
               {result && (
-                <View style={styles.summary}>
-                  <SummaryRow label="Folder" value={basename(result.folder)} />
-                  <SummaryRow label="Found" value={String(result.datedCount)} />
-                  <SummaryRow label="Scanned" value={String(result.scannedCount)} />
-                  <SummaryRow label="Matched" value={String(result.matchedCount)} />
-                </View>
+                <ResultsPreview
+                  result={result}
+                  parsedQuery={parsedQuery}
+                  previewRows={previewRows}
+                  showFields={showFields}
+                />
               )}
-
-                {result?.errors.map((err, i) => (
-                  <Text key={i} style={styles.errorText}>
-                    {err}
-                  </Text>
-                ))}
-
-              <View style={styles.results}>
-                {parsedQuery?.kind === 'table' ? (
-                  <View style={{ flexDirection: 'column' }}>
-                    <View style={{ flexDirection: 'row', borderBottomWidth: 1, borderColor: '#ccc', paddingBottom: 4, marginBottom: 8 }}>
-                      {parsedQuery.fields.map((f, i) => (
-                        <Text key={i} style={{ flex: 1, fontWeight: 'bold', fontSize: 16, color: '#333' }}>
-                          {f.label}
-                        </Text>
-                      ))}
-                    </View>
-                    {previewRows.filter(r => r.included).map(row => (
-                      <View key={row.path} style={{ flexDirection: 'row', paddingVertical: 6, borderBottomWidth: 1, borderColor: '#eee' }}>
-                        {parsedQuery.fields.map((f, i) => (
-                          <Text key={i} style={{ flex: 1, fontSize: 16, color: '#444', paddingRight: 4 }} numberOfLines={2}>
-                            {valueForField(row, f.key) || '-'}
-                          </Text>
-                        ))}
-                      </View>
-                    ))}
-                    {previewRows.filter(r => !r.included).length > 0 && (
-                      <Text style={[styles.resultMeta, { marginTop: 8 }]}>
-                        {previewRows.filter(r => !r.included).length} skipped rows hidden.
-                      </Text>
-                    )}
-                  </View>
-                ) : (
-                  <View style={{ flexDirection: 'column' }}>
-                    {previewRows.filter(r => r.included).map(row => {
-                      const maxChars = 40;
-                      const label = trimLabel(rowLabelForQuery(row, parsedQuery, showFields) || row.whereLabel || row.matchedKeywords.join(', '), maxChars);
-                      return (
-                        <View key={row.path} style={{ flexDirection: 'row', paddingVertical: 4, borderBottomWidth: 1, borderColor: '#eee' }}>
-                          <Text style={{ fontSize: 16, color: '#0066cc', textDecorationLine: 'underline' }}>{label}</Text>
-                        </View>
-                      );
-                    })}
-                    {previewRows.filter(r => !r.included).length > 0 && (
-                      <Text style={[styles.resultMeta, { marginTop: 8 }]}>
-                        {previewRows.filter(r => !r.included).length} skipped rows hidden.
-                      </Text>
-                    )}
-                  </View>
-                )}
-              </View>
               </>
             ) : mode === 'addItems' ? (
               <>
@@ -2513,64 +2464,13 @@ export default function SNViewsPanel() {
                 </View>
 
                 {result && (
-                  <View style={styles.summary}>
-                    <SummaryRow label="Folder" value={basename(result.folder)} />
-                    <SummaryRow label="Found" value={String(result.datedCount)} />
-                    <SummaryRow label="Scanned" value={String(result.scannedCount)} />
-                    <SummaryRow label="Matched" value={String(result.matchedCount)} />
-                  </View>
+                  <ResultsPreview
+                    result={result}
+                    parsedQuery={parsedQuery}
+                    previewRows={previewRows}
+                    showFields={showFields}
+                  />
                 )}
-
-                {result?.errors.map((err, i) => (
-                  <Text key={i} style={styles.errorText}>
-                    {err}
-                  </Text>
-                ))}
-
-                <View style={styles.results}>
-                  {parsedQuery?.kind === 'table' ? (
-                    <View style={{ flexDirection: 'column' }}>
-                      <View style={{ flexDirection: 'row', borderBottomWidth: 1, borderColor: '#ccc', paddingBottom: 4, marginBottom: 8 }}>
-                        {parsedQuery.fields.map((f, i) => (
-                          <Text key={i} style={{ flex: 1, fontWeight: 'bold', fontSize: 16, color: '#333' }}>
-                            {f.label}
-                          </Text>
-                        ))}
-                      </View>
-                      {previewRows.filter(r => r.included).map(row => (
-                        <View key={row.path} style={{ flexDirection: 'row', paddingVertical: 6, borderBottomWidth: 1, borderColor: '#eee' }}>
-                          {parsedQuery.fields.map((f, i) => (
-                            <Text key={i} style={{ flex: 1, fontSize: 16, color: '#444', paddingRight: 4 }} numberOfLines={2}>
-                              {valueForField(row, f.key) || '-'}
-                            </Text>
-                          ))}
-                        </View>
-                      ))}
-                      {previewRows.filter(r => !r.included).length > 0 && (
-                        <Text style={[styles.resultMeta, { marginTop: 8 }]}>
-                          {previewRows.filter(r => !r.included).length} skipped rows hidden.
-                        </Text>
-                      )}
-                    </View>
-                  ) : (
-                    <View style={{ flexDirection: 'column' }}>
-                      {previewRows.filter(r => r.included).map(row => {
-                        const maxChars = 40;
-                        const label = trimLabel(rowLabelForQuery(row, parsedQuery, showFields) || row.whereLabel || row.matchedKeywords.join(', '), maxChars);
-                        return (
-                          <View key={row.path} style={{ flexDirection: 'row', paddingVertical: 4, borderBottomWidth: 1, borderColor: '#eee' }}>
-                            <Text style={{ fontSize: 16, color: '#0066cc', textDecorationLine: 'underline' }}>{label}</Text>
-                          </View>
-                        );
-                      })}
-                      {previewRows.filter(r => !r.included).length > 0 && (
-                        <Text style={[styles.resultMeta, { marginTop: 8 }]}>
-                          {previewRows.filter(r => !r.included).length} skipped rows hidden.
-                        </Text>
-                      )}
-                    </View>
-                  )}
-                </View>
               </>
             )}
           </ScrollView>
@@ -2647,9 +2547,83 @@ function OperatorButton({
 function SummaryRow({label, value}: {label: string; value: string}) {
   return (
     <View style={styles.summaryRow}>
-      <Text style={styles.summaryLabel}>{label}</Text>
+      <Text style={styles.summaryLabel}>{label}:</Text>
       <Text style={styles.summaryValue}>{value}</Text>
     </View>
+  );
+}
+
+function ResultsPreview({
+  result,
+  parsedQuery,
+  previewRows,
+  showFields,
+}: {
+  result: ViewResult;
+  parsedQuery: ParsedQuery | null;
+  previewRows: ViewRow[];
+  showFields: string[];
+}) {
+  return (
+    <>
+      <View style={styles.summary}>
+        <SummaryRow label="Folder" value={basename(result.folder)} />
+        <SummaryRow label="Found" value={String(result.datedCount)} />
+        <SummaryRow label="Scanned" value={String(result.scannedCount)} />
+        <SummaryRow label="Matched" value={String(result.matchedCount)} />
+      </View>
+
+      {result.errors.map((err, i) => (
+        <Text key={i} style={styles.errorText}>
+          {err}
+        </Text>
+      ))}
+
+      <View style={styles.results}>
+        {parsedQuery?.kind === 'table' ? (
+          <View style={{ flexDirection: 'column' }}>
+            <View style={{ flexDirection: 'row', borderBottomWidth: 1, borderColor: '#ccc', paddingBottom: 4, marginBottom: 8 }}>
+              {parsedQuery.fields.map((f, i) => (
+                <Text key={i} style={{ flex: 1, fontWeight: 'bold', fontSize: 16, color: '#333' }}>
+                  {f.label}
+                </Text>
+              ))}
+            </View>
+            {previewRows.filter(r => r.included).map(row => (
+              <View key={row.path} style={{ flexDirection: 'row', paddingVertical: 6, borderBottomWidth: 1, borderColor: '#eee' }}>
+                {parsedQuery.fields.map((f, i) => (
+                  <Text key={i} style={{ flex: 1, fontSize: 16, color: '#444', paddingRight: 4 }} numberOfLines={2}>
+                    {valueForField(row, f.key) || '-'}
+                  </Text>
+                ))}
+              </View>
+            ))}
+            {previewRows.filter(r => !r.included).length > 0 && (
+              <Text style={[styles.resultMeta, { marginTop: 8 }]}>
+                {previewRows.filter(r => !r.included).length} skipped rows hidden.
+              </Text>
+            )}
+          </View>
+        ) : (
+          <View style={{ flexDirection: 'column' }}>
+            {previewRows.filter(r => r.included).map(row => {
+              const maxChars = 40;
+              const label = trimLabel(rowLabelForQuery(row, parsedQuery, showFields) || row.whereLabel || row.matchedKeywords.join(', '), maxChars);
+              return (
+                <View key={row.path} style={{ flexDirection: 'row', paddingVertical: 4, borderBottomWidth: 1, borderColor: '#eee' }}>
+                  <Text style={{ fontSize: 16, color: '#0066cc', textDecorationLine: 'underline' }}>{label}</Text>
+                </View>
+              );
+            })}
+            {previewRows.filter(r => !r.included).length > 0 && (
+              <Text style={[styles.resultMeta, { marginTop: 8 }]}>
+                {previewRows.filter(r => !r.included).length} skipped rows hidden.
+              </Text>
+            )}
+          </View>
+        )}
+      </View>
+    </>
   );
 }
 
