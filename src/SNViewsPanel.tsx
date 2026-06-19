@@ -1,4 +1,5 @@
-import React, {useCallback, useEffect, useMemo, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {readDatabaseJson, writeDatabaseJson} from './services/nativeStorage';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -8,6 +9,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import {
   FileUtils,
@@ -1178,6 +1180,8 @@ async function readPropertiesFromNote(
 }
 
 export default function SNViewsPanel() {
+  const {width} = useWindowDimensions();
+  const isNomad = width < 800;
   const [mode, setMode] = useState<Mode>('dashboard');
   const [daysText, setDaysText] = useState(DEFAULT_DAYS);
   const [dashboardText, setDashboardText] = useState(DEFAULT_QUERY);
@@ -1293,94 +1297,46 @@ export default function SNViewsPanel() {
     setStatus(`Saved query: ${name}`);
   }, [queryText, savedQueryName, titleText]);
 
-  const scanSavedData = useCallback(async () => {
+  const isFirstRender = useRef(true);
+
+  const loadFromNative = useCallback(async () => {
     setBusy(true);
-    setStatus('Scanning for saved queries & templates...');
+    setStatus('Loading config from native storage...');
     try {
-      const pathRes = (await PluginCommAPI.getCurrentFilePath()) as any;
-      let folder = '';
-      if (pathRes?.success && typeof pathRes.result === 'string') {
-        folder = dirname(pathRes.result);
+      const raw = await readDatabaseJson();
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.savedQueries) setSavedQueries(parsed.savedQueries);
+        if (parsed.savedTemplates) setSavedTemplates(parsed.savedTemplates);
+        setStatus(`Loaded ${parsed.savedQueries?.length || 0} queries, ${parsed.savedTemplates?.length || 0} templates.`);
+      } else {
+        setStatus('No saved configuration found.');
       }
-      if (!folder) {
-        setStatus('Could not determine current folder.');
-        setBusy(false);
-        return;
-      }
-      const noteCandidates = await listNoteFilesInFolder(folder);
-      const foundQueries: SavedQuery[] = [];
-      const foundTemplates: SavedTemplate[] = [];
-      const errs: string[] = [];
-      for (const p of noteCandidates) {
-         try {
-            const res = (await withTimeout('getNoteTotalPageNum', PluginFileAPI.getNoteTotalPageNum(p) as Promise<any>)) as any;
-            if (res?.success && typeof res.result === 'number') {
-               const parsed = await readPropertiesFromNote(p, res.result, [], errs);
-               if (parsed.savedQueries && parsed.savedQueries.length > 0) {
-                 foundQueries.push(...parsed.savedQueries);
-               }
-               if (parsed.savedTemplates && parsed.savedTemplates.length > 0) {
-                 foundTemplates.push(...parsed.savedTemplates);
-               }
-            }
-         } catch (e) {
-            // ignore
-         }
-      }
-      let loadedQ = 0;
-      let loadedT = 0;
-      if (foundQueries.length > 0) {
-        setSavedQueries(current => {
-           const map = new Map(current.map(q => [q.name.toLowerCase(), q]));
-           foundQueries.forEach(q => map.set(q.name.toLowerCase(), q));
-           return Array.from(map.values());
-        });
-        loadedQ = foundQueries.length;
-      }
-      if (foundTemplates.length > 0) {
-        setSavedTemplates(current => {
-           const map = new Map(current.map(t => [t.name.toLowerCase(), t]));
-           foundTemplates.forEach(t => map.set(t.name.toLowerCase(), t));
-           return Array.from(map.values());
-        });
-        loadedT = foundTemplates.length;
-      }
-      setStatus(`Loaded ${loadedQ} queries, ${loadedT} templates.`);
     } catch (e) {
-      setStatus(`Scan error: ${String(e)}`);
+      setStatus(`Load error: ${String(e)}`);
     }
     setBusy(false);
   }, []);
 
-  const exportSavedData = useCallback(async () => {
-    if (savedQueries.length === 0 && savedTemplates.length === 0) {
-      setStatus('No saved data to export.');
+  const saveToNative = useCallback(async (queries: SavedQuery[], templates: SavedTemplate[]) => {
+    try {
+      await writeDatabaseJson(JSON.stringify({ savedQueries: queries, savedTemplates: templates }));
+    } catch (e) {
+      console.error('Failed to save config to native storage', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadFromNative();
+  }, [loadFromNative]);
+
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
       return;
     }
-    setBusy(true);
-    try {
-      let textToInsert = '';
-      for (const q of savedQueries) {
-         textToInsert += `[SNQ-SAVED]\nname: ${q.name}\nquery: ${q.query}\n${q.title ? `title: ${q.title}\n` : ''}[/SNQ-SAVED]\n\n`;
-      }
-      for (const t of savedTemplates) {
-         textToInsert += `[SNQ-TEMPLATE]\nname: ${t.name}\ntext: ${t.text}\n[/SNQ-TEMPLATE]\n\n`;
-      }
-      await PluginNoteAPI.insertText({
-        textContentFull: textToInsert,
-        textRect: {left: 100, top: 100, right: 900, bottom: 200},
-        fontSize: 24,
-        textBold: 0,
-        textItalics: 0,
-        textAlign: 0,
-        textEditable: 1,
-      } as any);
-      setStatus('Saved data exported to this note.');
-    } catch (e) {
-      setStatus(`Export error: ${String(e)}`);
-    }
-    setBusy(false);
-  }, [savedQueries, savedTemplates]);
+    saveToNative(savedQueries, savedTemplates);
+  }, [savedQueries, savedTemplates, saveToNative]);
 
   const loadSavedQuery = useCallback((item: SavedQuery) => {
     setSavedQueryName(item.name);
@@ -2197,10 +2153,10 @@ export default function SNViewsPanel() {
   return (
     <View style={styles.overlay}>
       <View style={styles.panel}>
-        <View style={styles.header}>
-          <Text style={styles.title}>SN Query</Text>
-          <Pressable onPress={close} style={styles.closeBtn}>
-            <Text style={styles.closeText}>x</Text>
+        <View style={[styles.header, isNomad && nomadStyles.header, isNomad && nomadStyles.header]}>
+          <Text style={[styles.title, isNomad && nomadStyles.title, isNomad && nomadStyles.title]}>SN Query</Text>
+          <Pressable onPress={close} style={[styles.closeBtn, isNomad && nomadStyles.closeBtn, isNomad && nomadStyles.closeBtn]}>
+            <Text style={[styles.closeText, isNomad && nomadStyles.closeText, isNomad && nomadStyles.closeText]}>x</Text>
           </Pressable>
         </View>
 
@@ -2218,7 +2174,7 @@ export default function SNViewsPanel() {
                 onPress={() => setMode('dashboard')}
               />
               <ModeButton
-                label="Add Items"
+                label="Templates & Config"
                 active={mode === 'addItems'}
                 onPress={() => setMode('addItems')}
               />
@@ -2238,12 +2194,12 @@ export default function SNViewsPanel() {
 
             {mode === 'dashboard' ? (
               <>
-                <Text style={styles.sectionTitle}>Dashboard</Text>
-                <Text style={styles.label}>Dashboard title</Text>
+                <Text style={[styles.sectionTitle, isNomad && nomadStyles.sectionTitle, isNomad && nomadStyles.sectionTitle]}>Dashboard</Text>
+                <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Dashboard title</Text>
                 <TextInput
                   value={titleText}
                   onChangeText={setTitleText}
-                  style={styles.input}
+                  style={[styles.input, isNomad && nomadStyles.input, isNomad && nomadStyles.input]}
                   autoCapitalize="sentences"
                   autoCorrect={false}
                   placeholder={
@@ -2251,30 +2207,30 @@ export default function SNViewsPanel() {
                   }
                 />
 
-                <Text style={styles.label}>Display fields</Text>
+                <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Display fields</Text>
                 <TextInput
                   value={showText}
                   onChangeText={setShowText}
-                  style={styles.input}
+                  style={[styles.input, isNomad && nomadStyles.input, isNomad && nomadStyles.input]}
                   autoCapitalize="none"
                   autoCorrect={false}
                   placeholder="blank uses date + filter fields"
                 />
 
-                <Text style={styles.label}>Days back</Text>
+                <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Days back</Text>
                 <TextInput
                   value={daysText}
                   onChangeText={setDaysText}
-                  style={styles.input}
+                  style={[styles.input, isNomad && nomadStyles.input, isNomad && nomadStyles.input]}
                   keyboardType="number-pad"
                   placeholder={FALLBACK_DAYS}
                 />
 
-                <Text style={styles.label}>Keywords or tags</Text>
+                <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Keywords or tags</Text>
                 <TextInput
                   value={dashboardText}
                   onChangeText={setDashboardText}
-                  style={styles.input}
+                  style={[styles.input, isNomad && nomadStyles.input, isNomad && nomadStyles.input]}
                   autoCapitalize="none"
                   autoCorrect={false}
                   placeholder="#acc201"
@@ -2282,7 +2238,7 @@ export default function SNViewsPanel() {
 
               {filters.length > 1 ? (
                 <>
-                  <Text style={styles.sectionTitle}>Filter Matching</Text>
+                  <Text style={[styles.sectionTitle, isNomad && nomadStyles.sectionTitle, isNomad && nomadStyles.sectionTitle]}>Filter Matching</Text>
                   <View style={styles.matchRow}>
                     <OperatorButton
                       label="Match all filters"
@@ -2310,11 +2266,11 @@ export default function SNViewsPanel() {
                       />
                     ) : null}
                   </View>
-                  <Text style={styles.label}>Property</Text>
+                  <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Property</Text>
                   <TextInput
                     value={filter.key}
                     onChangeText={value => updateFilter(filter.id, {key: value})}
-                    style={styles.input}
+                    style={[styles.input, isNomad && nomadStyles.input, isNomad && nomadStyles.input]}
                     autoCapitalize="none"
                     autoCorrect={false}
                     placeholder="due"
@@ -2329,11 +2285,11 @@ export default function SNViewsPanel() {
                       />
                     ))}
                   </View>
-                  <Text style={styles.label}>Value</Text>
+                  <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Value</Text>
                   <TextInput
                     value={filter.value}
                     onChangeText={value => updateFilter(filter.id, {value})}
-                    style={styles.input}
+                    style={[styles.input, isNomad && nomadStyles.input, isNomad && nomadStyles.input]}
                     autoCapitalize="none"
                     autoCorrect={false}
                     placeholder={filter.key.trim().toLowerCase() === 'due' ? '2026-06-16' : 'done'}
@@ -2341,11 +2297,11 @@ export default function SNViewsPanel() {
                 </View>
               ))}
 
-              <View style={styles.buttonRow}>
+              <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
                 <ActionButton label="Add filter" onPress={addFilter} quiet />
               </View>
 
-              <View style={styles.buttonRow}>
+              <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
                 <ActionButton label={busy ? 'Working...' : 'Preview'} onPress={runDashboardPreview} />
                 <ActionButton label="Insert" onPress={() => insertDashboard()} />
                 <ActionButton label="Clear" onPress={clear} quiet />
@@ -2362,10 +2318,10 @@ export default function SNViewsPanel() {
               </>
             ) : mode === 'addItems' ? (
               <>
-                <Text style={styles.sectionTitle}>Add Items</Text>
+                <Text style={[styles.sectionTitle, isNomad && nomadStyles.sectionTitle, isNomad && nomadStyles.sectionTitle]}>Templates & Config</Text>
                 {savedTemplates.length > 0 && (
                   <>
-                    <Text style={styles.label}>Load Template</Text>
+                    <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Load Template</Text>
                     <ScrollView horizontal style={{ marginBottom: 16 }}>
                       <View style={{ flexDirection: 'row', gap: 8, paddingHorizontal: 16 }}>
                         {savedTemplates.map(t => (
@@ -2385,17 +2341,17 @@ export default function SNViewsPanel() {
                   </>
                 )}
 
-                <Text style={styles.label}>Item Properties</Text>
+                <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Item Properties</Text>
                 <TextInput
                   value={propertyText}
                   onChangeText={setPropertyText}
-                  style={[styles.input, styles.propertiesInput]}
+                  style={[styles.input, styles.propertiesInput, isNomad && nomadStyles.input]}
                   autoCapitalize="none"
                   autoCorrect={false}
                   multiline
                   textAlignVertical="top"
                 />
-                <View style={styles.buttonRow}>
+                <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
                   <ActionButton label="Insert item block" onPress={insertProperties} />
                   <ActionButton label="Load selected" onPress={loadSelectedProperties} quiet />
                   <ActionButton label="Update selected" onPress={updateSelectedProperties} quiet />
@@ -2405,7 +2361,7 @@ export default function SNViewsPanel() {
                     value={templateName}
                     onChangeText={setTemplateName}
                     placeholder="New template name..."
-                    style={[styles.input, { flex: 1, height: 44, marginVertical: 0 }]}
+                    style={[styles.input, { flex: 1, height: 44, marginVertical: 0 }, isNomad && nomadStyles.input]}
                     autoCapitalize="none"
                   />
                   <ActionButton label="Save as Template" onPress={() => {
@@ -2425,7 +2381,7 @@ export default function SNViewsPanel() {
               </>
             ) : mode === 'saved' ? (
               <>
-                <Text style={styles.sectionTitle}>Saved Queries</Text>
+                <Text style={[styles.sectionTitle, isNomad && nomadStyles.sectionTitle, isNomad && nomadStyles.sectionTitle]}>Saved Queries</Text>
                 {savedQueries.length === 0 ? (
                   <Text style={styles.status}>
                     No saved queries yet. Create one in Advanced.
@@ -2433,10 +2389,10 @@ export default function SNViewsPanel() {
                 ) : null}
                 <View style={styles.results}>
                   {savedQueries.map(item => (
-                    <View key={item.id} style={styles.resultRow}>
-                      <Text style={styles.resultTitle}>{item.name}</Text>
-                      <Text style={styles.resultMeta}>{previewText(item.query, 120)}</Text>
-                      <View style={styles.buttonRow}>
+                    <View key={item.id} style={[styles.resultRow, isNomad && nomadStyles.resultRow, isNomad && nomadStyles.resultRow]}>
+                      <Text style={[styles.resultTitle, isNomad && nomadStyles.resultTitle, isNomad && nomadStyles.resultTitle]}>{item.name}</Text>
+                      <Text style={[styles.resultMeta, isNomad && nomadStyles.resultMeta, isNomad && nomadStyles.resultMeta]}>{previewText(item.query, 120)}</Text>
+                      <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
                         <ActionButton label="Run" onPress={() => runSavedQuery(item)} />
                         <ActionButton label="Edit" onPress={() => loadSavedQuery(item)} quiet />
                         <ActionButton label="Delete" onPress={() => deleteSavedQuery(item.id)} quiet />
@@ -2444,20 +2400,19 @@ export default function SNViewsPanel() {
                     </View>
                   ))}
                 </View>
-                <View style={styles.buttonRow}>
+                <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
                   <ActionButton label="New query" onPress={() => setMode('advanced')} />
-                  <ActionButton label={busy ? 'Scanning...' : 'Scan Notes'} onPress={scanSavedData} />
-                  <ActionButton label="Export to Note" onPress={exportSavedData} />
+                  <ActionButton label={busy ? 'Loading...' : 'Reload Config'} onPress={loadFromNative} />
                 </View>
               </>
             ) : (
               <>
-                <Text style={styles.sectionTitle}>Advanced Query</Text>
-                <Text style={styles.label}>Dashboard title</Text>
+                <Text style={[styles.sectionTitle, isNomad && nomadStyles.sectionTitle, isNomad && nomadStyles.sectionTitle]}>Advanced Query</Text>
+                <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Dashboard title</Text>
                 <TextInput
                   value={titleText}
                   onChangeText={setTitleText}
-                  style={styles.input}
+                  style={[styles.input, isNomad && nomadStyles.input, isNomad && nomadStyles.input]}
                   autoCapitalize="sentences"
                   autoCorrect={false}
                   placeholder={
@@ -2466,20 +2421,20 @@ export default function SNViewsPanel() {
                       : 'List view'
                   }
                 />
-                <Text style={styles.label}>Query name</Text>
+                <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Query name</Text>
                 <TextInput
                   value={savedQueryName}
                   onChangeText={setSavedQueryName}
-                  style={styles.input}
+                  style={[styles.input, isNomad && nomadStyles.input, isNomad && nomadStyles.input]}
                   autoCapitalize="sentences"
                   autoCorrect={false}
                   placeholder="ACC201 Assignments"
                 />
-                <Text style={styles.label}>Query text</Text>
+                <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Query text</Text>
                 <TextInput
                   value={queryText}
                   onChangeText={setQueryText}
-                  style={[styles.input, styles.queryInput]}
+                  style={[styles.input, styles.queryInput, isNomad && nomadStyles.input]}
                   autoCapitalize="none"
                   autoCorrect={false}
                   multiline
@@ -2487,14 +2442,14 @@ export default function SNViewsPanel() {
                   placeholder={'TABLE rating AS "Rating", summary AS "Summary" FROM #games SORT rating DESC'}
                 />
 
-                <View style={styles.buttonRow}>
+                <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
                   <ActionButton label={busy ? 'Working...' : 'Preview'} onPress={runAdvancedPreview} />
                   <ActionButton label="Save query" onPress={saveCurrentQuery} />
                   <ActionButton label="Insert" onPress={() => insertDashboard()} />
                   <ActionButton label="Clear" onPress={clear} quiet />
                 </View>
 
-                <View style={styles.buttonRow}>
+                <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
                   <ActionButton label="Insert query block" onPress={insertQueryBlock} quiet />
                   <ActionButton label="Load selected query" onPress={loadSelectedQuery} quiet />
                   <ActionButton label="Load & Run Selected Query" onPress={runSelectedQuery} quiet />
@@ -2526,6 +2481,8 @@ function ActionButton({
   onPress: () => void;
   quiet?: boolean;
 }) {
+  const {width} = useWindowDimensions();
+  const isNomad = width < 800;
   return (
     <Pressable
       onPress={onPress}
@@ -2534,7 +2491,7 @@ function ActionButton({
         quiet && styles.actionBtnQuiet,
         pressed && styles.actionBtnPressed,
       ]}>
-      <Text style={[styles.actionText, quiet && styles.actionTextQuiet]}>
+      <Text style={[styles.actionText, quiet && styles.actionTextQuiet, isNomad && nomadStyles.actionText]}>
         {label}
       </Text>
     </Pressable>
@@ -2550,11 +2507,13 @@ function ModeButton({
   active: boolean;
   onPress: () => void;
 }) {
+  const {width} = useWindowDimensions();
+  const isNomad = width < 800;
   return (
     <Pressable
       onPress={onPress}
-      style={[styles.modeBtn, active && styles.modeBtnActive]}>
-      <Text style={[styles.modeText, active && styles.modeTextActive]}>
+      style={[styles.modeBtn, active && styles.modeBtnActive, isNomad && nomadStyles.modeBtn]}>
+      <Text style={[styles.modeText, active && styles.modeTextActive, isNomad && nomadStyles.modeText]}>
         {label}
       </Text>
     </Pressable>
@@ -2570,10 +2529,12 @@ function OperatorButton({
   active: boolean;
   onPress: () => void;
 }) {
+  const {width} = useWindowDimensions();
+  const isNomad = width < 800;
   return (
     <Pressable
       onPress={onPress}
-      style={[styles.operatorBtn, active && styles.operatorBtnActive]}>
+      style={[styles.operatorBtn, active && styles.operatorBtnActive, isNomad && nomadStyles.operatorBtn]}>
       <Text style={[styles.operatorText, active && styles.operatorTextActive]}>
         {label}
       </Text>
@@ -2601,6 +2562,8 @@ function ResultsPreview({
   previewRows: ViewRow[];
   showFields: string[];
 }) {
+  const {width} = useWindowDimensions();
+  const isNomad = width < 800;
   return (
     <>
       <View style={styles.summary}>
@@ -2636,7 +2599,7 @@ function ResultsPreview({
               </View>
             ))}
             {previewRows.filter(r => !r.included).length > 0 && (
-              <Text style={[styles.resultMeta, { marginTop: 8 }]}>
+              <Text style={[styles.resultMeta, { marginTop: 8 }, isNomad && nomadStyles.resultMeta]}>
                 {previewRows.filter(r => !r.included).length} skipped rows hidden.
               </Text>
             )}
@@ -2653,7 +2616,7 @@ function ResultsPreview({
               );
             })}
             {previewRows.filter(r => !r.included).length > 0 && (
-              <Text style={[styles.resultMeta, { marginTop: 8 }]}>
+              <Text style={[styles.resultMeta, { marginTop: 8 }, isNomad && nomadStyles.resultMeta]}>
                 {previewRows.filter(r => !r.included).length} skipped rows hidden.
               </Text>
             )}
@@ -2724,6 +2687,12 @@ const styles = StyleSheet.create({
     color: '#000000',
     marginTop: 4,
     marginBottom: 2,
+  },
+  helpContent: {
+    fontSize: 16,
+    color: '#333333',
+    lineHeight: 22,
+    marginBottom: 10,
   },
   label: {fontSize: 15, fontWeight: '600', color: '#333333'},
   input: {
@@ -2808,4 +2777,39 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 23,
   },
+});
+
+const nomadStyles = StyleSheet.create({
+  header: {
+    minHeight: 50,
+    paddingVertical: 8,
+  },
+  title: {fontSize: 21},
+  closeBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+  },
+  closeText: {fontSize: 18},
+  scrollContent: {padding: 16, paddingBottom: 260, gap: 8},
+  sectionTitle: {fontSize: 17},
+  label: {fontSize: 14},
+  input: {
+    minHeight: 44,
+    paddingVertical: 8,
+    fontSize: 15,
+  },
+  queryInput: {
+    minHeight: 90,
+    lineHeight: 20,
+  },
+  modeBtn: {paddingVertical: 10},
+  modeText: {fontSize: 15},
+  actionBtn: {paddingVertical: 12},
+  actionText: {fontSize: 15},
+  operatorBtn: {minWidth: 60, paddingVertical: 10},
+  buttonRow: {gap: 8},
+  resultTitle: {fontSize: 15},
+  resultMeta: {fontSize: 13},
+  resultRow: {paddingTop: 6},
 });
