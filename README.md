@@ -1,11 +1,11 @@
 # SNQuery
 
-SNQuery is a powerful, Dataview-like plugin for Supernote that enables dynamic dashboard creation and note management directly on your device. 
+SNQuery is a powerful plugin for Supernote that brings Obsidian Dataview-like querying capabilities to your device, enabling dashboard creation and note management without needing to export your notes to a PC.
 
 ## Features
 
-- **Dataview Syntax Support**: Query your notes using familiar `TABLE` and `LIST` commands.
-- **Dynamic Dashboards**: Create self-updating dashboards that track keywords and property fields.
+- **Dataview-like Syntax**: Query your notes using familiar `TABLE` and `LIST` commands tailored for Supernote's offline environment.
+- **On-Demand Dashboards**: Create dashboards that track keywords and property fields. (Note: Dashboards do not auto-update; you simply tap "Run" on your saved queries to fetch the latest data).
 - **Add Items Seamlessly**: Quickly insert new list items wrapped in `[SNQ]` markup with customizable templates.
 - **Saved Queries**: Save your frequently used queries and run them with a single tap.
 
