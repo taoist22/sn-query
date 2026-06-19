@@ -117,6 +117,7 @@ type ParsedQuery = {
   kind: QueryKind;
   sourceTerms: string[];
   filters: WhereFilter[];
+  filterGroups?: WhereFilter[][];
   fields: FieldSpec[];
   sort: SortSpec | null;
   limit: number | null;
@@ -309,12 +310,21 @@ function parseDataviewQuery(input: string): ParsedQuery | null {
   }
 
   const filters: WhereFilter[] = [];
+  const filterGroups: WhereFilter[][] = [];
   const whereMatch = compact.match(/\bWHERE\s+(.+?)(?=\s+SORT\b|\s+LIMIT\b|$)/i);
   if (whereMatch) {
-    for (const part of whereMatch[1].split(/\s+AND\s+/i)) {
-      const filter = parseWhereExpression(part.trim());
-      if (filter) {
-        filters.push(filter);
+    const orGroups = whereMatch[1].split(/\s+OR\s+/i);
+    for (const group of orGroups) {
+      const andFilters: WhereFilter[] = [];
+      for (const part of group.split(/\s+AND\s+/i)) {
+        const filter = parseWhereExpression(part.trim());
+        if (filter) {
+          andFilters.push(filter);
+          filters.push(filter);
+        }
+      }
+      if (andFilters.length > 0) {
+        filterGroups.push(andFilters);
       }
     }
   }
@@ -1565,8 +1575,16 @@ export default function SNViewsPanel() {
             )
             .map(entry => String(entry.page)),
         ).map(page => Number(page));
-        const keywordPassed = terms.length === 0 || matchedKeywords.length > 0;
-        const wherePassed = compareFilters(properties, queryFilters, matchMode);
+        const filenameMatches = terms.some(t => basename(item.path).toLowerCase().includes(t.toLowerCase()));
+        const keywordPassed = terms.length === 0 || matchedKeywords.length > 0 || filenameMatches;
+        let wherePassed = true;
+        if (parsedQuery?.filterGroups && parsedQuery.filterGroups.length > 0) {
+          wherePassed = parsedQuery.filterGroups.some(group =>
+            group.every(f => compareProperty(properties, f.key, f.op, f.value))
+          );
+        } else {
+          wherePassed = compareFilters(properties, queryFilters, matchMode);
+        }
         const included = keywordPassed && wherePassed;
         const whereLabel = whereLabelsFor(properties, queryFilters);
 
@@ -1574,7 +1592,7 @@ export default function SNViewsPanel() {
           rows.push({
             path: item.path,
             name: basename(item.path),
-            dateLabel: item.date ? formatDateLabel(item.date) : basename(item.path).replace(/\.note$/i, ''),
+            dateLabel: itemDateLabel,
             included,
             keywordPassed,
             wherePassed,
