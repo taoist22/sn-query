@@ -32,7 +32,7 @@ const API_TIMEOUT_MS = 8000;
 const LASSO_TEXT_TIMEOUT_MS = 2500;
 const PAGE_SCAN_LIMIT = 40;
 const KEYWORD_SCAN_LIMIT = 150;
-const PROPERTIES_SCAN_PAGE_LIMIT = 10;
+const PROPERTIES_SCAN_PAGE_LIMIT = 1;
 const FUTURE_DATE_SCAN_DAYS = 365;
 const FALLBACK_DAYS = '30';
 const DEFAULT_DAYS = '';
@@ -97,7 +97,15 @@ type ViewResult = {
   errors: string[];
 };
 
-type Mode = 'dashboard' | 'addItems' | 'saved' | 'advanced';
+type ScanProgress = {
+  current: number;
+  total: number;
+  file: string;
+  matched: number;
+  elapsedMs: number;
+};
+
+type Mode = 'dashboard' | 'addItems' | 'saved' | 'advanced' | 'editSelected';
 type MatchMode = 'all' | 'any';
 type WhereOperator = '<' | '<=' | '=' | '!=' | '>=' | '>' | 'contains';
 type WhereFilter = {
@@ -115,6 +123,11 @@ type SortSpec = {
   key: string;
   direction: 'asc' | 'desc';
 };
+type StatFunction = 'avg' | 'sum' | 'min' | 'max' | 'count';
+type StatSpec = {
+  func: StatFunction;
+  key: string;
+};
 type ParsedQuery = {
   kind: QueryKind;
   sourceTerms: string[];
@@ -123,6 +136,7 @@ type ParsedQuery = {
   fields: FieldSpec[];
   sort: SortSpec | null;
   limit: number | null;
+  stats?: StatSpec[];
 };
 type Rect = {left: number; top: number; right: number; bottom: number};
 type SavedQuery = {
@@ -293,7 +307,7 @@ function parseDataviewQuery(input: string): ParsedQuery | null {
 
   if (kind === 'table') {
     const tableMatch = compact.match(
-      /^TABLE\s+(.+?)(?=\s+FROM\b|\s+WHERE\b|\s+SORT\b|\s+LIMIT\b|$)/i,
+      /^TABLE\s+(.+?)(?=\s+FROM\b|\s+WHERE\b|\s+STATS\b|\s+SORT\b|\s+LIMIT\b|$)/i,
     );
     if (tableMatch) {
       for (const part of splitCsvRespectingQuotes(tableMatch[1])) {
@@ -306,14 +320,14 @@ function parseDataviewQuery(input: string): ParsedQuery | null {
   }
 
   const sourceTerms: string[] = [];
-  const fromMatch = compact.match(/\bFROM\s+(.+?)(?=\s+WHERE\b|\s+SORT\b|\s+LIMIT\b|$)/i);
+  const fromMatch = compact.match(/\bFROM\s+(.+?)(?=\s+WHERE\b|\s+STATS\b|\s+SORT\b|\s+LIMIT\b|$)/i);
   if (fromMatch) {
     sourceTerms.push(...termsFromInput(fromMatch[1]));
   }
 
   const filters: WhereFilter[] = [];
   const filterGroups: WhereFilter[][] = [];
-  const whereMatch = compact.match(/\bWHERE\s+(.+?)(?=\s+SORT\b|\s+LIMIT\b|$)/i);
+  const whereMatch = compact.match(/\bWHERE\s+(.+?)(?=\s+STATS\b|\s+SORT\b|\s+LIMIT\b|$)/i);
   if (whereMatch) {
     const orGroups = whereMatch[1].split(/\s+OR\s+/i);
     for (const group of orGroups) {
@@ -342,6 +356,21 @@ function parseDataviewQuery(input: string): ParsedQuery | null {
     };
   }
 
+  let stats: StatSpec[] | undefined;
+  const statsMatch = compact.match(/\bSTATS\s+(.+?)(?=\s+SORT\b|\s+LIMIT\b|$)/i);
+  if (statsMatch) {
+    stats = [];
+    for (const part of splitCsvRespectingQuotes(statsMatch[1])) {
+      const match = part.trim().match(/^(AVG|SUM|MIN|MAX|COUNT)\s*\(\s*([A-Za-z0-9_.-]+)\s*\)/i);
+      if (match) {
+        stats.push({
+          func: match[1].toLowerCase() as StatFunction,
+          key: match[2].trim().toLowerCase(),
+        });
+      }
+    }
+  }
+
   let limit: number | null = null;
   const limitMatch = compact.match(/\bLIMIT\s+(\d+)/i);
   if (limitMatch) {
@@ -352,9 +381,11 @@ function parseDataviewQuery(input: string): ParsedQuery | null {
     kind,
     sourceTerms: uniqueStrings(sourceTerms),
     filters,
+    filterGroups,
     fields: fields.length > 0 ? fields : DEFAULT_TABLE_FIELDS.map(key => ({key, label: titleCaseProperty(key)})),
     sort,
     limit,
+    stats,
   };
 }
 
@@ -572,7 +603,12 @@ function mergeProperties(blocks: Record<string, string>[]): Record<string, strin
 
 function numberFromValue(value: string): number | null {
   if (!value) return null;
-  const m = value.trim().match(/^-?\d+(\.\d+)?$/);
+  const clean = value.trim().toLowerCase();
+  const duration = durationHoursFromValue(clean);
+  if (duration != null) {
+    return duration;
+  }
+  const m = clean.match(/^-?\d+(\.\d+)?$/);
   if (!m) {
     return null;
   }
@@ -580,14 +616,37 @@ function numberFromValue(value: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function durationHoursFromValue(value: string): number | null {
+  const colon = value.match(/^(\d{1,3}):([0-5]\d)$/);
+  if (colon) {
+    const hours = Number(colon[1]);
+    const minutes = Number(colon[2]);
+    return hours + minutes / 60;
+  }
+
+  const hourMinute = value.match(
+    /^(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)(?:\s*(\d{1,2})\s*(?:m|min|mins|minute|minutes)?)?$/,
+  );
+  if (hourMinute) {
+    const hours = Number(hourMinute[1]);
+    const minutes = hourMinute[2] == null ? 0 : Number(hourMinute[2]);
+    if (minutes >= 60) {
+      return null;
+    }
+    return hours + minutes / 60;
+  }
+
+  return null;
+}
+
 function dateTimeFromValue(value: string): number | null {
-  const m = value.match(/\b(20\d{2})[-_/.](\d{1,2})[-_/.](\d{1,2})\b/);
+  const m = value.match(/\b(20\d{2})(?:[-_/.](\d{1,2})[-_/.](\d{1,2})|(\d{2})(\d{2}))\b/);
   if (!m) {
     return null;
   }
   const year = Number(m[1]);
-  const month = Number(m[2]);
-  const day = Number(m[3]);
+  const month = Number(m[2] || m[4]);
+  const day = Number(m[3] || m[5]);
   const date = new Date(year, month - 1, day);
   if (
     date.getFullYear() !== year ||
@@ -727,6 +786,12 @@ function valueForField(row: ViewRow, field: string): string {
   }
   if (cleanField === 'file' || cleanField === 'name') {
     return row.name.replace(/\.note$/i, '');
+  }
+  if (cleanField === 'diagnostics') {
+    return row.pageDiagnostics.join(' | ');
+  }
+  if (cleanField === 'errors') {
+    return row.errors.join(' | ');
   }
   if (row.properties[cleanField] != null) {
     return row.properties[cleanField];
@@ -877,6 +942,20 @@ function formatNumber(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
+function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return minutes > 0 ? `${minutes}m ${remainder}s` : `${remainder}s`;
+}
+
+function progressBar(current: number, total: number): string {
+  const width = 12;
+  const ratio = total > 0 ? Math.max(0, Math.min(1, current / total)) : 0;
+  const filled = Math.max(0, Math.min(width, Math.round(ratio * width)));
+  return `[${'#'.repeat(filled)}${'-'.repeat(width - filled)}]`;
+}
+
 function statsForRows(rows: ViewRow[], key: string): string {
   const cleanKey = key.trim().toLowerCase();
   if (!cleanKey) {
@@ -903,9 +982,12 @@ function statsForRows(rows: ViewRow[], key: string): string {
 }
 
 function propertyValuesForKeywords(props: Record<string, string>): string[] {
-  const tags = props.tags ?? '';
-  const type = props.type ?? '';
-  return [tags, type]
+  const result: string[] = [];
+  for (const [key, value] of Object.entries(props)) {
+    result.push(key);
+    result.push(value);
+  }
+  return result
     .join(' ')
     .split(/[,\s]+/)
     .map(value => value.trim())
@@ -941,6 +1023,23 @@ async function getSelectedTextWithTimeout(): Promise<string> {
   return value.trim();
 }
 
+function recycleElementsSafe(elements: any[]): void {
+  try {
+    (PluginCommAPI as any).clearElementCache?.();
+    return;
+  } catch {
+    // fall back to per-element cleanup below
+  }
+
+  for (const element of elements) {
+    try {
+      if (typeof element?.uuid === 'string') {
+        (PluginCommAPI as any).recycleElement?.(element.uuid);
+      }
+    } catch {}
+  }
+}
+
 async function readSelectedTextByRect(): Promise<{text: string; box: any | null}> {
   const rectRes = (await withTimeout(
     'getLassoRect',
@@ -973,15 +1072,19 @@ async function readSelectedTextByRect(): Promise<{text: string; box: any | null}
     PluginFileAPI.getElements(pageRes.result, pathRes.result) as Promise<any>,
   )) as any;
   const elements = Array.isArray(elementsRes?.result) ? elementsRes.result : [];
-  const textBoxes = elements
-    .map(asTextBox)
-    .filter((box: any): box is any => Boolean(box?.textRect))
-    .filter((box: any) => rectsOverlap(box.textRect as Rect, lassoRect));
-  if (textBoxes.length === 0) {
-    return {text: '', box: null};
+  try {
+    const textBoxes = elements
+      .map(asTextBox)
+      .filter((box: any): box is any => Boolean(box?.textRect))
+      .filter((box: any) => rectsOverlap(box.textRect as Rect, lassoRect));
+    if (textBoxes.length === 0) {
+      return {text: '', box: null};
+    }
+    const text = textBoxes.map(readTextBoxContent).filter(Boolean).join('\n').trim();
+    return {text, box: textBoxes[0]};
+  } finally {
+    recycleElementsSafe(elements);
   }
-  const text = textBoxes.map(readTextBoxContent).filter(Boolean).join('\n').trim();
-  return {text, box: textBoxes[0]};
 }
 
 async function readSelectedTextAny(
@@ -1078,74 +1181,80 @@ async function readPropertiesFromNote(
       PluginFileAPI.getElements(apiPage, path) as Promise<any>,
     )) as any;
     if (!res?.success || !Array.isArray(res.result)) {
-      pageDiagnostics.push(`${label}: unavailable`);
+      let rawRes = 'undefined';
+      try { rawRes = JSON.stringify(res); } catch(e) { rawRes = String(res); }
+      pageDiagnostics.push(`${label}: unavailable (raw: ${rawRes})`);
       return 0;
     }
     const elements = res.result;
-    elementCount += elements.length;
-    const first = elements[0];
-    const firstText = first ? readTextBoxContent(asTextBox(first)) : '';
-    pageDiagnostics.push(
-      `${label}: elements ${elements.length}${
-        first ? ` keys ${elementKeys(first)}` : ''
-      }${firstText ? ` text "${previewText(firstText)}"` : ''}`,
-    );
-    for (const element of elements) {
-      const text = readTextBoxContent(asTextBox(element));
-      if (text) {
-        textBoxCount++;
-      }
-      const lower = text.toLowerCase();
-      if (lower.includes('[snq-saved]') && lower.includes('[/snq-saved]')) {
-        const savedBlocks = extractBlocks(text, '[SNQ-SAVED]', '[/SNQ-SAVED]');
-        for (const block of savedBlocks) {
-          const parsed = parsePropertyItems(block, false);
-          for (const item of parsed) {
-            if (item.name && item.query) {
-              parsedSavedQueries.push({
-                id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                name: item.name,
-                query: item.query,
-                title: item.title,
-              });
+    try {
+      elementCount += elements.length;
+      const first = elements[0];
+      const firstText = first ? readTextBoxContent(asTextBox(first)) : '';
+      pageDiagnostics.push(
+        `${label}: elements ${elements.length}${
+          first ? ` keys ${elementKeys(first)}` : ''
+        }${firstText ? ` text "${previewText(firstText)}"` : ''}`,
+      );
+      for (const element of elements) {
+        const text = readTextBoxContent(asTextBox(element));
+        if (text) {
+          textBoxCount++;
+        }
+        const lower = text.toLowerCase();
+        if (lower.includes('[snq-saved]') && lower.includes('[/snq-saved]')) {
+          const savedBlocks = extractBlocks(text, '[SNQ-SAVED]', '[/SNQ-SAVED]');
+          for (const block of savedBlocks) {
+            const parsed = parsePropertyItems(block, false);
+            for (const item of parsed) {
+              if (item.name && item.query) {
+                parsedSavedQueries.push({
+                  id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                  name: item.name,
+                  query: item.query,
+                  title: item.title,
+                });
+              }
             }
           }
         }
-      }
 
-      if (lower.includes('[snq-template]') && lower.includes('[/snq-template]')) {
-        const templateBlocks = extractBlocks(text, '[SNQ-TEMPLATE]', '[/SNQ-TEMPLATE]');
-        for (const block of templateBlocks) {
-          const parsed = parsePropertyItems(block, false);
-          for (const item of parsed) {
-            if (item.name && item.text) {
-              parsedSavedTemplates.push({
-                id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                name: item.name,
-                text: item.text,
-              });
+        if (lower.includes('[snq-template]') && lower.includes('[/snq-template]')) {
+          const templateBlocks = extractBlocks(text, '[SNQ-TEMPLATE]', '[/SNQ-TEMPLATE]');
+          for (const block of templateBlocks) {
+            const parsed = parsePropertyItems(block, false);
+            for (const item of parsed) {
+              if (item.name && item.text) {
+                parsedSavedTemplates.push({
+                  id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                  name: item.name,
+                  text: item.text,
+                });
+              }
             }
           }
         }
-      }
-      
-      if (lower.includes('[snq]') && lower.includes('[/snq]')) {
-        const parsedItems = parseProperties(text);
-        if (parsedItems.length > 0) {
-          blocks.push(...parsedItems);
-          snqBlockCount++;
+        
+        if (lower.includes('[snq]') && lower.includes('[/snq]')) {
+          const parsedItems = parseProperties(text);
+          if (parsedItems.length > 0) {
+            blocks.push(...parsedItems);
+            snqBlockCount++;
+          }
+        } else if (
+          cleanWantedKeys.length > 0 &&
+          cleanWantedKeys.some(key => lower.includes(key))
+        ) {
+          const loose = parseLooseProperties(text);
+          if (Object.keys(loose).length > 0) {
+            looseBlocks.push(loose);
+          }
         }
-      } else if (
-        cleanWantedKeys.length > 0 &&
-        cleanWantedKeys.some(key => lower.includes(key))
-      ) {
-        const loose = parseLooseProperties(text);
-        if (Object.keys(loose).length > 0) {
-          looseBlocks.push(loose);
-        }
       }
+      return elements.length;
+    } finally {
+      recycleElementsSafe(elements);
     }
-    return elements.length;
   };
 
   let scannedPageOneFallback = false;
@@ -1155,9 +1264,17 @@ async function readPropertiesFromNote(
     }
     try {
       const found = await scanApiPage(page, `api p.${page}`);
+      
+      if (blocks.length > 0) {
+        break;
+      }
+      
       if (page === 0 && found === 0 && pageCount > 1) {
         await scanApiPage(1, 'api p.1 fallback');
         scannedPageOneFallback = true;
+        if (blocks.length > 0) {
+          break;
+        }
       }
     } catch (e) {
       errors.push(`Properties p.${page}: ${String(e)}`);
@@ -1191,13 +1308,16 @@ export default function SNViewsPanel() {
   const [savedTemplates, setSavedTemplates] = useState<SavedTemplate[]>(DEFAULT_TEMPLATES);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
   const [templateName, setTemplateName] = useState<string>('');
+  const [creatingTemplate, setCreatingTemplate] = useState(false);
   const [matchMode, setMatchMode] = useState<MatchMode>('all');
   const [filters, setFilters] = useState<WhereFilter[]>(() => [newWhereFilter()]);
   const [titleText, setTitleText] = useState('');
   const [showText, setShowText] = useState(DEFAULT_SHOW);
+  const [showStats, setShowStats] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ViewResult | null>(null);
   const [status, setStatus] = useState('');
+  const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [propertyText, setPropertyText] = useState(DEFAULT_PROPERTIES);
   const [lassoTextBox, setLassoTextBox] = useState<any | null>(null);
   const [handledLassoLaunch, setHandledLassoLaunch] = useState(false);
@@ -1224,6 +1344,43 @@ export default function SNViewsPanel() {
     [showText, fallbackShowFields],
   );
 
+  const computedStatsText = useMemo(() => {
+    let baseStats = statsForRows(matchedRows, primaryFilter?.key ?? '');
+    if (parsedQuery?.kind === 'table') {
+      const statsList: string[] = [];
+      if (parsedQuery.stats && parsedQuery.stats.length > 0) {
+        for (const stat of parsedQuery.stats) {
+          const nums = numericValues(matchedRows, stat.key);
+          if (nums.length > 0) {
+            if (stat.func === 'avg') {
+              statsList.push(`${stat.key.toUpperCase()} AVG: ${formatNumber(nums.reduce((a,b)=>a+b,0)/nums.length)}`);
+            } else if (stat.func === 'sum') {
+              statsList.push(`${stat.key.toUpperCase()} SUM: ${formatNumber(nums.reduce((a,b)=>a+b,0))}`);
+            } else if (stat.func === 'min') {
+              statsList.push(`${stat.key.toUpperCase()} MIN: ${formatNumber(Math.min(...nums))}`);
+            } else if (stat.func === 'max') {
+              statsList.push(`${stat.key.toUpperCase()} MAX: ${formatNumber(Math.max(...nums))}`);
+            } else if (stat.func === 'count') {
+              statsList.push(`${stat.key.toUpperCase()} COUNT: ${nums.length}`);
+            }
+          }
+        }
+      } else if (showStats) {
+        for (const f of parsedQuery.fields) {
+          const nums = numericValues(matchedRows, f.key);
+          if (nums.length > 0) {
+            const avg = nums.reduce((sum, val) => sum + val, 0) / nums.length;
+            statsList.push(`${f.label} Avg: ${formatNumber(avg)}   Max: ${formatNumber(Math.max(...nums))}   Min: ${formatNumber(Math.min(...nums))}`);
+          }
+        }
+      }
+      if (statsList.length > 0) {
+        baseStats = `Count: ${matchedRows.length}\n${statsList.join('\n')}`;
+      }
+    }
+    return baseStats;
+  }, [matchedRows, primaryFilter, parsedQuery, showStats]);
+
   const clear = useCallback(() => {
     setDaysText(DEFAULT_DAYS);
     setDashboardText(DEFAULT_QUERY);
@@ -1233,21 +1390,56 @@ export default function SNViewsPanel() {
     setFilters([newWhereFilter()]);
     setTitleText('');
     setShowText(DEFAULT_SHOW);
+    setShowStats(false);
     setResult(null);
     setStatus('');
+    setScanProgress(null);
+  }, []);
+
+  const openDashboardFromToolbar = useCallback(() => {
+    clear();
+    setHandledLassoLaunch(false);
+    setLassoTextBox(null);
+    setPropertyText(DEFAULT_PROPERTIES);
+    setMode('dashboard');
+  }, [clear]);
+
+  const openEditSelectedFromSelectionLaunch = useCallback(() => {
+    setHandledLassoLaunch(true);
+    setLassoTextBox(null);
+    setPropertyText('');
+    setResult(null);
+    setScanProgress(null);
+    setMode('editSelected');
+    setStatus('Tap Load Selected Block to edit the selected SNQ block.');
   }, []);
 
   useEffect(() => {
     const unsub = subscribeToButtonEvents(event => {
       if (event.id === BUTTON_ID_TOOLBAR) {
-        clear();
+        consumeLastButtonEvent();
+        openDashboardFromToolbar();
+      } else if (
+        event.id === BUTTON_ID_LASSO_TEXT ||
+        event.id === BUTTON_ID_SELECTED_TEXT
+      ) {
+        consumeLastButtonEvent();
+        openEditSelectedFromSelectionLaunch();
       }
     });
-    if (getLastButtonEvent()?.id !== BUTTON_ID_LASSO_TEXT) {
-      clear();
+    const lastEvent = getLastButtonEvent();
+    if (lastEvent?.id === BUTTON_ID_TOOLBAR) {
+      consumeLastButtonEvent();
+      openDashboardFromToolbar();
+    } else if (
+      lastEvent?.id === BUTTON_ID_LASSO_TEXT ||
+      lastEvent?.id === BUTTON_ID_SELECTED_TEXT
+    ) {
+      consumeLastButtonEvent();
+      openEditSelectedFromSelectionLaunch();
     }
     return unsub;
-  }, [clear]);
+  }, [openDashboardFromToolbar, openEditSelectedFromSelectionLaunch]);
 
   const updateFilter = useCallback(
     (id: string, patch: Partial<Omit<WhereFilter, 'id'>>) => {
@@ -1351,6 +1543,61 @@ export default function SNViewsPanel() {
     setStatus('Deleted saved query.');
   }, []);
 
+  const loadTemplate = useCallback((template: SavedTemplate) => {
+    setSelectedTemplateId(template.id);
+    setTemplateName(template.name);
+    setPropertyText(template.text);
+    setCreatingTemplate(false);
+    setStatus(`Loaded template: ${template.name}`);
+  }, []);
+
+  const addNewTemplate = useCallback(() => {
+    setSelectedTemplateId('');
+    setTemplateName('');
+    setPropertyText('');
+    setCreatingTemplate(true);
+    setStatus('New template ready.');
+  }, []);
+
+  const saveTemplate = useCallback(() => {
+    const name = templateName.trim();
+    const text = propertyText.trim();
+    if (!name) {
+      setStatus('Enter template name.');
+      return;
+    }
+    if (!text) {
+      setStatus('Enter item properties.');
+      return;
+    }
+    setSavedTemplates(current => {
+      if (!creatingTemplate && selectedTemplateId) {
+        return current.map(template =>
+          template.id === selectedTemplateId
+            ? {...template, name, text}
+            : template,
+        );
+      }
+      const filtered = current.filter(
+        template => template.name.toLowerCase() !== name.toLowerCase(),
+      );
+      return [
+        ...filtered,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          name,
+          text,
+        },
+      ];
+    });
+    setCreatingTemplate(false);
+    setStatus(
+      !creatingTemplate && selectedTemplateId
+        ? `Updated template: ${name}`
+        : `Saved template: ${name}`,
+    );
+  }, [creatingTemplate, propertyText, selectedTemplateId, templateName]);
+
   const runPreview = useCallback(async (queryOverride?: string): Promise<ViewResult | null> => {
     if (busy) {
       return null;
@@ -1369,8 +1616,10 @@ export default function SNViewsPanel() {
       ...queryFields,
       ...sortKeys,
     ]);
-    const propertyActive =
-      whereActive || queryFields.length > 0 || sortKeys.length > 0 || terms.length > 0;
+    const bodyKeys = whereKeys.filter(
+      k => k !== 'date' && k !== 'file' && k !== 'file.name' && k !== 'tags' && k !== 'keyword' && k !== 'type'
+    );
+    const propertyActive = bodyKeys.length > 0;
     const queryDate =
       whereFilters
         .map(filter => dateTimeFromValue(filter.value))
@@ -1379,6 +1628,7 @@ export default function SNViewsPanel() {
     setBusy(true);
     setResult(null);
     setStatus('Scanning...');
+    setScanProgress(null);
 
     const started = Date.now();
     const errors: string[] = [];
@@ -1439,7 +1689,18 @@ export default function SNViewsPanel() {
 
     const rows: ViewRow[] = [];
     const limited = candidates.slice(0, KEYWORD_SCAN_LIMIT);
-    for (const item of limited) {
+    for (let itemIndex = 0; itemIndex < limited.length; itemIndex++) {
+      const item = limited[itemIndex];
+      const updateProgress = () => {
+        setScanProgress({
+          current: itemIndex + 1,
+          total: limited.length,
+          file: basename(item.path),
+          matched: rows.filter(row => row.included).length,
+          elapsedMs: Date.now() - started,
+        });
+      };
+      updateProgress();
       const rowStarted = Date.now();
       const rowErrors: string[] = [];
       let pages = PAGE_SCAN_LIMIT;
@@ -1450,19 +1711,23 @@ export default function SNViewsPanel() {
       let elementCount = 0;
       let pageDiagnostics: string[] = [];
 
-      try {
-        const totalRes = (await withTimeout(
-          'getNoteTotalPageNum',
-          PluginFileAPI.getNoteTotalPageNum(item.path),
-        )) as any;
-        if (totalRes?.success && typeof totalRes.result === 'number') {
-          pages = Math.min(totalRes.result, PAGE_SCAN_LIMIT);
-        }
-      } catch (e) {
-        rowErrors.push('Page count: ' + String(e));
+      if (propertyActive) {
+        const propertyResult = await readPropertiesFromNote(
+          item.path,
+          pages,
+          whereKeys,
+          rowErrors,
+        );
+        items = propertyResult.items.length > 0 ? propertyResult.items : [{}];
+        propertyBlockCount = propertyResult.blockCount;
+        textBoxCount = propertyResult.textBoxCount;
+        elementCount = propertyResult.elementCount;
+        pageDiagnostics = propertyResult.pageDiagnostics;
       }
 
-      const pageList = Array.from({length: pages}, (_, i) => i);
+      const pageList = propertyActive
+        ? [0]
+        : Array.from({length: pages}, (_, i) => i);
       try {
         const kwRes = (await withTimeout(
           'getKeyWords',
@@ -1478,20 +1743,6 @@ export default function SNViewsPanel() {
         }
       } catch (e) {
         rowErrors.push('Keywords: ' + String(e));
-      }
-
-      if (propertyActive) {
-        const propertyResult = await readPropertiesFromNote(
-          item.path,
-          pages,
-          whereKeys,
-          rowErrors,
-        );
-        items = propertyResult.items.length > 0 ? propertyResult.items : [{}];
-        propertyBlockCount = propertyResult.blockCount;
-        textBoxCount = propertyResult.textBoxCount;
-        elementCount = propertyResult.elementCount;
-        pageDiagnostics = propertyResult.pageDiagnostics;
       }
 
       let itemDate = item.date;
@@ -1566,6 +1817,7 @@ export default function SNViewsPanel() {
           });
         }
       }
+      updateProgress();
     }
 
     const sortedRows = sortRows(rows, parsed?.sort ?? null);
@@ -1595,6 +1847,7 @@ export default function SNViewsPanel() {
       errors,
     };
     setResult(nextResult);
+    setScanProgress(null);
     setStatus(
       `Found ${nextResult.matchedCount} match(es) in ${nextResult.elapsedMs} ms.`,
     );
@@ -1684,7 +1937,7 @@ export default function SNViewsPanel() {
         parsed?.kind === 'table'
           ? parsed.fields.map(field => field.key)
           : fieldsFromInput(showText, fallbackShowFields);
-      const stats = statsForRows(activeRows, primaryKey);
+      const stats = computedStatsText;
       const criteria = [
         savedQueryName ? `Query Name: ${savedQueryName}` : '',
         `Range: last ${activeResult.days} days`,
@@ -1695,10 +1948,21 @@ export default function SNViewsPanel() {
       ]
         .filter(Boolean)
         .join('   ');
+      const runSummary = [
+        `Folder: ${basename(activeResult.folder)}`,
+        `Found: ${activeResult.datedCount}`,
+        `Scanned: ${activeResult.scannedCount}`,
+        `Matched: ${activeResult.matchedCount}`,
+      ].join('   ');
+      
       const headerH = parsed?.kind === 'table' ? 42 : 0;
-      const rowsTop = top + 142 + headerH;
+      const headerTop = top + 124;
+      const rowsTop = headerTop + headerH;
+      const statsLines = stats.trim() ? stats.split('\n').length : 0;
+      const statsH = statsLines > 0 ? 34 + statsLines * 28 : 0;
+      const statsGap = statsH > 0 ? 24 : 0;
       const rowsPerCol = Math.ceil(activeRows.length / columnCount);
-      const maxRowsPerCol = Math.max(1, Math.floor((pageHeight - rowsTop - 70) / rowH));
+      const maxRowsPerCol = Math.max(1, Math.floor((pageHeight - rowsTop - statsH - statsGap - 70) / rowH));
       const safeRowsPerCol = Math.min(rowsPerCol, maxRowsPerCol);
       const rowsToInsert = activeRows.slice(0, safeRowsPerCol * columnCount);
 
@@ -1721,20 +1985,19 @@ export default function SNViewsPanel() {
         textEditable: 1,
       } as any);
       await PluginNoteAPI.insertText({
-        textContentFull: stats,
-        textRect: {left, top: top + 88, right: left + fullWidth, bottom: top + 126},
-        fontSize: 24,
-        textBold: 1,
+        textContentFull: runSummary,
+        textRect: {left, top: top + 82, right: left + fullWidth, bottom: top + 114},
+        fontSize: 18,
+        textBold: 0,
         textItalics: 0,
         textAlign: 0,
         textEditable: 1,
       } as any);
-
       if (parsed?.kind === 'table') {
         for (const cell of tableColumnRects(
           parsed.fields,
           left,
-          top + 130,
+          headerTop,
           fullWidth,
           38,
           6,
@@ -1831,13 +2094,28 @@ export default function SNViewsPanel() {
         }
       }
 
+      const afterRowsY = rowsTop + safeRowsPerCol * rowH;
+      let nextY = afterRowsY + 10;
+
       if (activeRows.length > rowsToInsert.length) {
-        const y = rowsTop + 10 + safeRowsPerCol * rowH;
         await PluginNoteAPI.insertText({
           textContentFull: `${activeRows.length - rowsToInsert.length} more did not fit.`,
-          textRect: {left, top: y, right: left + fullWidth, bottom: y + 44},
+          textRect: {left, top: nextY, right: left + fullWidth, bottom: nextY + 44},
           fontSize: 24,
           textBold: 0,
+          textItalics: 0,
+          textAlign: 0,
+          textEditable: 1,
+        } as any);
+        nextY += 54;
+      }
+
+      if (stats.trim()) {
+        await PluginNoteAPI.insertText({
+          textContentFull: stats,
+          textRect: {left, top: nextY + statsGap, right: left + fullWidth, bottom: nextY + statsGap + statsH},
+          fontSize: 22,
+          textBold: 1,
           textItalics: 0,
           textAlign: 0,
           textEditable: 1,
@@ -1992,6 +2270,40 @@ export default function SNViewsPanel() {
     }
   }, [busy, readSelectedQueryText, runPreview]);
 
+  const openSelectedBlockEditor = useCallback(async (allowNativeFallback = true) => {
+    setBusy(true);
+    setStatus('Reading selected block...');
+    try {
+      const selected = await readSelectedTextAny(allowNativeFallback);
+      if (!selected.text) {
+        setLassoTextBox(null);
+        setStatus('No selected text found.');
+        return false;
+      }
+      const lower = selected.text.toLowerCase();
+      if (!lower.includes('[snq]') || !lower.includes('[/snq]')) {
+        setLassoTextBox(null);
+        setStatus('Selected text did not contain an SNQ block.');
+        return false;
+      }
+      setLassoTextBox(selected.box);
+      setPropertyText(normalizePropertyBlock(selected.text));
+      setMode('editSelected');
+      setStatus(
+        selected.box
+          ? 'Selected block loaded.'
+          : 'Selected block loaded, but it cannot be updated from this selection.',
+      );
+      return true;
+    } catch (e) {
+      setLassoTextBox(null);
+      setStatus('Read selected block failed: ' + String(e));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
   useEffect(() => {
     const lastEvent = getLastButtonEvent();
     const isSelectionLaunch =
@@ -2002,8 +2314,10 @@ export default function SNViewsPanel() {
     }
     consumeLastButtonEvent();
     setHandledLassoLaunch(true);
-    setMode('advanced');
-    setStatus('Selected query ready. Tap Run selected query.');
+    setLassoTextBox(null);
+    setPropertyText('');
+    setMode('editSelected');
+    setStatus('Tap Load Selected Block to edit the selected SNQ block.');
   }, [handledLassoLaunch]);
 
   const insertProperties = useCallback(async () => {
@@ -2167,34 +2481,46 @@ export default function SNViewsPanel() {
             style={styles.scroll}
             contentContainerStyle={styles.scrollContent}
             keyboardShouldPersistTaps="handled">
-            <View style={styles.modeRow}>
-              <ModeButton
-                label="Dashboard"
-                active={mode === 'dashboard'}
-                onPress={() => setMode('dashboard')}
-              />
-              <ModeButton
-                label="Templates & Config"
-                active={mode === 'addItems'}
-                onPress={() => setMode('addItems')}
-              />
-              <ModeButton
-                label="Saved"
-                active={mode === 'saved'}
-                onPress={() => setMode('saved')}
-              />
-              <ModeButton
-                label="Advanced"
-                active={mode === 'advanced'}
-                onPress={() => setMode('advanced')}
-              />
-            </View>
-
-            {status ? <Text style={styles.status}>{status}</Text> : null}
+            {mode !== 'editSelected' ? (
+              <View style={styles.modeRow}>
+                <ModeButton
+                  label="Dashboard"
+                  active={mode === 'dashboard'}
+                  onPress={() => setMode('dashboard')}
+                />
+                <ModeButton
+                  label="Templates & Config"
+                  active={mode === 'addItems'}
+                  onPress={() => setMode('addItems')}
+                />
+                <ModeButton
+                  label="Saved"
+                  active={mode === 'saved'}
+                  onPress={() => setMode('saved')}
+                />
+                <ModeButton
+                  label="Advanced"
+                  active={mode === 'advanced'}
+                  onPress={() => setMode('advanced')}
+                />
+              </View>
+            ) : null}
 
             {mode === 'dashboard' ? (
               <>
                 <Text style={[styles.sectionTitle, isNomad && nomadStyles.sectionTitle, isNomad && nomadStyles.sectionTitle]}>Dashboard</Text>
+                <View style={styles.selectedBlockShortcut}>
+                  <Text style={styles.selectedBlockTitle}>Editing an existing SNQ block?</Text>
+                  <Text style={styles.selectedBlockText}>
+                    If you opened SN Query from a lassoed block, use this to edit that block only.
+                  </Text>
+                  <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow]}>
+                    <ActionButton
+                      label="Edit selected block"
+                      onPress={() => openSelectedBlockEditor(true)}
+                    />
+                  </View>
+                </View>
                 <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Dashboard title</Text>
                 <TextInput
                   value={titleText}
@@ -2216,6 +2542,17 @@ export default function SNViewsPanel() {
                   autoCorrect={false}
                   placeholder="blank uses date + filter fields"
                 />
+
+                <Pressable
+                  style={{ flexDirection: 'row', alignItems: 'center', marginBottom: isNomad ? 4 : 12 }}
+                  onPress={() => setShowStats(!showStats)}>
+                  <View style={{ width: 24, height: 24, borderWidth: 2, borderColor: '#0066cc', marginRight: 8, justifyContent: 'center', alignItems: 'center' }}>
+                    {showStats && <View style={{ width: 14, height: 14, backgroundColor: '#0066cc' }} />}
+                  </View>
+                  <Text style={{ fontSize: isNomad ? 18 : 22, color: '#333' }}>
+                    Include column statistics
+                  </Text>
+                </Pressable>
 
                 <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Days back</Text>
                 <TextInput
@@ -2307,32 +2644,66 @@ export default function SNViewsPanel() {
                 <ActionButton label="Clear" onPress={clear} quiet />
               </View>
 
+              {status ? <Text style={styles.status}>{status}</Text> : null}
+              {scanProgress ? (
+                <ScanProgressView progress={scanProgress} />
+              ) : null}
+
               {result && (
                 <ResultsPreview
                   result={result}
                   parsedQuery={parsedQuery}
                   previewRows={previewRows}
                   showFields={showFields}
+                  statsText={computedStatsText}
                 />
               )}
+              </>
+            ) : mode === 'editSelected' ? (
+              <>
+                <Text style={[styles.sectionTitle, isNomad && nomadStyles.sectionTitle]}>
+                  Edit Selected SNQ Block
+                </Text>
+                <Text style={styles.helpContent}>
+                  Update the selected block on this note. This does not change saved templates.
+                </Text>
+                <Text style={[styles.label, isNomad && nomadStyles.label]}>Block properties</Text>
+                <TextInput
+                  value={propertyText}
+                  onChangeText={setPropertyText}
+                  style={[styles.input, styles.propertiesInput, isNomad && nomadStyles.input]}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  multiline
+                  textAlignVertical="top"
+                />
+                <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow]}>
+                  <ActionButton
+                    label={busy ? 'Loading...' : 'Load Selected Block'}
+                    onPress={() => openSelectedBlockEditor(true)}
+                    quiet={Boolean(lassoTextBox)}
+                  />
+                  <ActionButton
+                    label={busy ? 'Updating...' : 'Update Selected Block'}
+                    onPress={updateSelectedProperties}
+                  />
+                  <ActionButton label="Cancel" onPress={close} quiet />
+                </View>
+                {status ? <Text style={styles.status}>{status}</Text> : null}
               </>
             ) : mode === 'addItems' ? (
               <>
                 <Text style={[styles.sectionTitle, isNomad && nomadStyles.sectionTitle, isNomad && nomadStyles.sectionTitle]}>Templates & Config</Text>
                 {savedTemplates.length > 0 && (
                   <>
-                    <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Load Template</Text>
+                    <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Saved templates</Text>
                     <ScrollView horizontal style={{ marginBottom: 16 }}>
                       <View style={{ flexDirection: 'row', gap: 8, paddingHorizontal: 16 }}>
                         {savedTemplates.map(t => (
                           <ActionButton 
                             key={t.id} 
                             label={t.name} 
-                            onPress={() => {
-                               setSelectedTemplateId(t.id);
-                               setTemplateName(t.name);
-                               setPropertyText(t.text);
-                            }} 
+                            onPress={() => loadTemplate(t)} 
                             quiet={t.id !== selectedTemplateId}
                           />
                         ))}
@@ -2340,6 +2711,20 @@ export default function SNViewsPanel() {
                     </ScrollView>
                   </>
                 )}
+
+                <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
+                  <ActionButton label="Add New Template" onPress={addNewTemplate} quiet={!creatingTemplate} />
+                </View>
+
+                <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Template name</Text>
+                <TextInput
+                  value={templateName}
+                  onChangeText={setTemplateName}
+                  placeholder={creatingTemplate ? 'New template name' : 'Select or create a template'}
+                  style={[styles.input, isNomad && nomadStyles.input]}
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                />
 
                 <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Item Properties</Text>
                 <TextInput
@@ -2353,31 +2738,21 @@ export default function SNViewsPanel() {
                 />
                 <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
                   <ActionButton label="Insert item block" onPress={insertProperties} />
-                  <ActionButton label="Load selected" onPress={loadSelectedProperties} quiet />
-                  <ActionButton label="Update selected" onPress={updateSelectedProperties} quiet />
-                </View>
-                <View style={[{ flexDirection: 'row', gap: 8, marginTop: 16 }]}>
-                  <TextInput
-                    value={templateName}
-                    onChangeText={setTemplateName}
-                    placeholder="New template name..."
-                    style={[styles.input, { flex: 1, height: 44, marginVertical: 0 }, isNomad && nomadStyles.input]}
-                    autoCapitalize="none"
+                  <ActionButton
+                    label="Edit selected block"
+                    onPress={() => openSelectedBlockEditor(true)}
+                    quiet
                   />
-                  <ActionButton label="Save as Template" onPress={() => {
-                     const name = templateName.trim();
-                     if (!name) { setStatus('Enter template name'); return; }
-                     setSavedTemplates(cur => {
-                        const filtered = cur.filter(t => t.name.toLowerCase() !== name.toLowerCase());
-                        return [...filtered, {
-                           id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                           name,
-                           text: propertyText.trim()
-                        }];
-                     });
-                     setStatus(`Saved template: ${name}`);
-                  }} quiet />
                 </View>
+
+                <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
+                  <ActionButton
+                    label={!creatingTemplate && selectedTemplateId ? 'Update Template' : 'Save as Template'}
+                    onPress={saveTemplate}
+                    quiet
+                  />
+                </View>
+                {status ? <Text style={styles.status}>{status}</Text> : null}
               </>
             ) : mode === 'saved' ? (
               <>
@@ -2404,6 +2779,10 @@ export default function SNViewsPanel() {
                   <ActionButton label="New query" onPress={() => setMode('advanced')} />
                   <ActionButton label={busy ? 'Loading...' : 'Reload Config'} onPress={loadFromNative} />
                 </View>
+                {status ? <Text style={styles.status}>{status}</Text> : null}
+                {scanProgress ? (
+                  <ScanProgressView progress={scanProgress} />
+                ) : null}
               </>
             ) : (
               <>
@@ -2443,17 +2822,22 @@ export default function SNViewsPanel() {
                 />
 
                 <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
+                  <ActionButton label="Insert query block" onPress={insertQueryBlock} quiet />
+                  <ActionButton label="Load selected query" onPress={loadSelectedQuery} quiet />
+                  <ActionButton label="Load & Run Selected Query" onPress={runSelectedQuery} quiet />
+                </View>
+
+                <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
                   <ActionButton label={busy ? 'Working...' : 'Preview'} onPress={runAdvancedPreview} />
                   <ActionButton label="Save query" onPress={saveCurrentQuery} />
                   <ActionButton label="Insert" onPress={() => insertDashboard()} />
                   <ActionButton label="Clear" onPress={clear} quiet />
                 </View>
 
-                <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
-                  <ActionButton label="Insert query block" onPress={insertQueryBlock} quiet />
-                  <ActionButton label="Load selected query" onPress={loadSelectedQuery} quiet />
-                  <ActionButton label="Load & Run Selected Query" onPress={runSelectedQuery} quiet />
-                </View>
+                {status ? <Text style={styles.status}>{status}</Text> : null}
+                {scanProgress ? (
+                  <ScanProgressView progress={scanProgress} />
+                ) : null}
 
                 {result && (
                   <ResultsPreview
@@ -2461,6 +2845,7 @@ export default function SNViewsPanel() {
                     parsedQuery={parsedQuery}
                     previewRows={previewRows}
                     showFields={showFields}
+                    statsText={computedStatsText}
                   />
                 )}
               </>
@@ -2495,6 +2880,30 @@ function ActionButton({
         {label}
       </Text>
     </Pressable>
+  );
+}
+
+function ScanProgressView({progress}: {progress: ScanProgress}) {
+  const warning =
+    progress.elapsedMs >= 60000
+      ? 'Still scanning. Large folders can take several minutes.'
+      : progress.elapsedMs >= 30000
+        ? 'Still working. This scan is taking longer than usual.'
+        : '';
+
+  return (
+    <View style={styles.progressBox}>
+      <Text style={styles.progressText}>
+        {`${progressBar(progress.current, progress.total)} ${progress.current}/${progress.total}`}
+      </Text>
+      <Text style={styles.progressMeta}>Current: {progress.file}</Text>
+      <Text style={styles.progressMeta}>
+        {`Matches so far: ${progress.matched}   Elapsed: ${formatElapsed(progress.elapsedMs)}`}
+      </Text>
+      {warning ? (
+        <Text style={styles.progressWarning}>{warning}</Text>
+      ) : null}
+    </View>
   );
 }
 
@@ -2556,11 +2965,13 @@ function ResultsPreview({
   parsedQuery,
   previewRows,
   showFields,
+  statsText,
 }: {
   result: ViewResult;
   parsedQuery: ParsedQuery | null;
   previewRows: ViewRow[];
   showFields: string[];
+  statsText: string;
 }) {
   const {width} = useWindowDimensions();
   const isNomad = width < 800;
@@ -2623,6 +3034,15 @@ function ResultsPreview({
           </View>
         )}
       </View>
+
+      {statsText ? (
+        <View style={[styles.summary, { marginTop: 12, backgroundColor: '#f9f9f9', padding: 8, borderRadius: 4 }]}>
+          <Text style={{ fontWeight: 'bold', fontSize: 16, color: '#333' }}>Statistics</Text>
+          <Text style={{ fontSize: 14, color: '#555', marginTop: 4 }}>
+            {statsText}
+          </Text>
+        </View>
+      ) : null}
     </>
   );
 }
@@ -2694,6 +3114,24 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     marginBottom: 10,
   },
+  selectedBlockShortcut: {
+    borderWidth: 1,
+    borderColor: '#BBBBBB',
+    borderRadius: 8,
+    padding: 12,
+    backgroundColor: '#F7F7F7',
+    gap: 4,
+  },
+  selectedBlockTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111111',
+  },
+  selectedBlockText: {
+    fontSize: 14,
+    color: '#333333',
+    lineHeight: 19,
+  },
   label: {fontSize: 15, fontWeight: '600', color: '#333333'},
   input: {
     minHeight: 54,
@@ -2751,6 +3189,22 @@ const styles = StyleSheet.create({
   actionText: {fontSize: 16, fontWeight: '700', color: '#FFFFFF'},
   actionTextQuiet: {color: '#000000'},
   status: {fontSize: 15, color: '#333333'},
+  progressBox: {
+    borderWidth: 1,
+    borderColor: '#DDDDDD',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 10,
+    backgroundColor: '#F8F8F8',
+  },
+  progressText: {fontSize: 15, fontWeight: '700', color: '#111111'},
+  progressMeta: {fontSize: 13, color: '#333333', marginTop: 3},
+  progressWarning: {
+    fontSize: 13,
+    color: '#7A4B00',
+    marginTop: 6,
+    fontWeight: '700',
+  },
   summary: {
     borderTopWidth: 1,
     borderTopColor: '#DDDDDD',
