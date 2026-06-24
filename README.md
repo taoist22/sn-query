@@ -1,3 +1,7 @@
+
+
+https://github.com/user-attachments/assets/277d843e-3362-479d-93df-45bfb79ba94a
+
 # SNQuery
 
 SNQuery is a powerful plugin for Supernote that brings Obsidian Dataview-like querying capabilities to your device, enabling dashboard creation and note management without needing to export your notes to a PC.
