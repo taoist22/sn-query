@@ -1598,7 +1598,10 @@ export default function SNViewsPanel() {
     );
   }, [creatingTemplate, propertyText, selectedTemplateId, templateName]);
 
-  const runPreview = useCallback(async (queryOverride?: string): Promise<ViewResult | null> => {
+  const runPreview = useCallback(async (
+    queryOverride?: string,
+    options?: {propertyFields?: string[]},
+  ): Promise<ViewResult | null> => {
     if (busy) {
       return null;
     }
@@ -1615,9 +1618,10 @@ export default function SNViewsPanel() {
       ...whereFilters.map(filter => filter.key),
       ...queryFields,
       ...sortKeys,
+      ...(options?.propertyFields ?? []),
     ]);
     const bodyKeys = whereKeys.filter(
-      k => k !== 'date' && k !== 'file' && k !== 'file.name' && k !== 'tags' && k !== 'keyword' && k !== 'type'
+      k => k !== 'date' && k !== 'file' && k !== 'file.name' && k !== 'tags' && k !== 'keyword'
     );
     const propertyActive = bodyKeys.length > 0;
     const queryDate =
@@ -1856,8 +1860,8 @@ export default function SNViewsPanel() {
   }, [busy, daysText, queryText, filters, matchMode]);
 
   const runDashboardPreview = useCallback(
-    () => runPreview(dashboardText),
-    [dashboardText, runPreview],
+    () => runPreview(dashboardText, {propertyFields: showFields}),
+    [dashboardText, runPreview, showFields],
   );
 
   const runAdvancedPreview = useCallback(
@@ -2509,18 +2513,6 @@ export default function SNViewsPanel() {
             {mode === 'dashboard' ? (
               <>
                 <Text style={[styles.sectionTitle, isNomad && nomadStyles.sectionTitle, isNomad && nomadStyles.sectionTitle]}>Dashboard</Text>
-                <View style={styles.selectedBlockShortcut}>
-                  <Text style={styles.selectedBlockTitle}>Editing an existing SNQ block?</Text>
-                  <Text style={styles.selectedBlockText}>
-                    If you opened SN Query from a lassoed block, use this to edit that block only.
-                  </Text>
-                  <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow]}>
-                    <ActionButton
-                      label="Edit selected block"
-                      onPress={() => openSelectedBlockEditor(true)}
-                    />
-                  </View>
-                </View>
                 <Text style={[styles.label, isNomad && nomadStyles.label, isNomad && nomadStyles.label]}>Dashboard title</Text>
                 <TextInput
                   value={titleText}
@@ -2738,11 +2730,6 @@ export default function SNViewsPanel() {
                 />
                 <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
                   <ActionButton label="Insert item block" onPress={insertProperties} />
-                  <ActionButton
-                    label="Edit selected block"
-                    onPress={() => openSelectedBlockEditor(true)}
-                    quiet
-                  />
                 </View>
 
                 <View style={[styles.buttonRow, isNomad && nomadStyles.buttonRow, isNomad && nomadStyles.buttonRow]}>
@@ -3113,24 +3100,6 @@ const styles = StyleSheet.create({
     color: '#333333',
     lineHeight: 22,
     marginBottom: 10,
-  },
-  selectedBlockShortcut: {
-    borderWidth: 1,
-    borderColor: '#BBBBBB',
-    borderRadius: 8,
-    padding: 12,
-    backgroundColor: '#F7F7F7',
-    gap: 4,
-  },
-  selectedBlockTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#111111',
-  },
-  selectedBlockText: {
-    fontSize: 14,
-    color: '#333333',
-    lineHeight: 19,
   },
   label: {fontSize: 15, fontWeight: '600', color: '#333333'},
   input: {
