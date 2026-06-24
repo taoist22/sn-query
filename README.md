@@ -1,5 +1,3 @@
-"WARNING: This plugin is currently shelved due to a severe memory leak in the Supernote OS getElements API (Error 206) which causes the device to crash when scanning multiple files. The plugin will not function correctly for queries larger than 3-4 files until Ratta patches this native OS bug." 
-
 # SNQuery
 
 SNQuery is a powerful plugin for Supernote that brings Obsidian Dataview-like querying capabilities to your device, enabling dashboard creation and note management without needing to export your notes to a PC.
